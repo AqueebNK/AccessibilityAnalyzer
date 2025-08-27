@@ -13,7 +13,7 @@ const PORT = process.env.PORT || 5000;
 
 // Puppeteer configuration for Render deployment
 const puppeteerConfig = process.env.NODE_ENV === 'production' ? {
-  headless: true,
+  headless: 'new', // Fix deprecation warning
   args: [
     '--no-sandbox',
     '--disable-setuid-sandbox',
@@ -25,7 +25,7 @@ const puppeteerConfig = process.env.NODE_ENV === 'production' ? {
     '--disable-extensions'
   ]
 } : {
-  headless: true,
+  headless: 'new',
   args: ['--no-sandbox', '--disable-setuid-sandbox']
 };
 
