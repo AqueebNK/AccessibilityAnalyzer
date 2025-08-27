@@ -11,6 +11,24 @@ require('dotenv').config();
 const app = express();
 const PORT = process.env.PORT || 5000;
 
+// Puppeteer configuration for Render deployment
+const puppeteerConfig = process.env.NODE_ENV === 'production' ? {
+  headless: true,
+  args: [
+    '--no-sandbox',
+    '--disable-setuid-sandbox',
+    '--disable-dev-shm-usage',
+    '--disable-gpu',
+    '--no-first-run',
+    '--no-zygote',
+    '--single-process',
+    '--disable-extensions'
+  ]
+} : {
+  headless: true,
+  args: ['--no-sandbox', '--disable-setuid-sandbox']
+};
+
 // Middleware
 app.use(cors({
   origin: [
@@ -325,11 +343,8 @@ app.post('/api/analyze-url', async (req, res) => {
 
     console.log(`🔍 Analyzing URL: ${url}`);
 
-    // Launch Puppeteer
-    const browser = await puppeteer.launch({
-      headless: true,
-      args: ['--no-sandbox', '--disable-setuid-sandbox']
-    });
+    // Launch Puppeteer with environment-specific configuration
+    const browser = await puppeteer.launch(puppeteerConfig);
     
     const page = await browser.newPage();
     
