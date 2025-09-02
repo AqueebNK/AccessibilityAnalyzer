@@ -1,4 +1,4 @@
-// server.js
+// server.js - Fixed version with better error handling
 const express = require('express');
 const cors = require('cors');
 const mongoose = require('mongoose');
@@ -11,35 +11,31 @@ require('dotenv').config();
 const app = express();
 const PORT = process.env.PORT || 5000;
 
-// Puppeteer configuration for Render deployment
-const puppeteerConfig = process.env.NODE_ENV === 'production' ? {
-  headless: 'new', // Fix deprecation warning
-  args: [
-    '--no-sandbox',
-    '--disable-setuid-sandbox',
-    '--disable-dev-shm-usage',
-    '--disable-gpu',
-    '--no-first-run',
-    '--no-zygote',
-    '--single-process',
-    '--disable-extensions'
-  ]
-} : {
-  headless: 'new',
-  args: ['--no-sandbox', '--disable-setuid-sandbox']
-};
-
-// Middleware
+// Middleware - Fixed CORS for Render deployment
 app.use(cors({
   origin: [
     'http://localhost:3000',           // for local development
+    'http://localhost:3001',           // alternative local port
+    'http://localhost:5173',           // Vite default port
     'https://your-netlify-app.netlify.app',  // replace with your actual Netlify URL
-    'https://*.netlify.app'            // allows any Netlify subdomain
+    'https://*.netlify.app',           // allows any Netlify subdomain
+    'https://*.vercel.app',            // if using Vercel
+    // Add your actual frontend domain here
   ],
-  credentials: true
+  credentials: true,
+  methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
+  allowedHeaders: ['Content-Type', 'Authorization', 'Accept'],
+  optionsSuccessStatus: 200 // For legacy browser support
 }));
+
 app.use(express.json({ limit: '10mb' }));
 app.use(express.urlencoded({ extended: true, limit: '10mb' }));
+
+// Add request logging middleware
+app.use((req, res, next) => {
+  console.log(`${new Date().toISOString()} - ${req.method} ${req.path}`);
+  next();
+});
 
 // MongoDB Connection (Optional for testing)
 let Analysis = null;
@@ -84,7 +80,6 @@ const calculateComplianceScore = (violations, passes, incomplete) => {
   return Math.round(((passedChecks + partialCredit) / totalChecks) * 100);
 };
 
-// FIXED: Updated mapSeverity function for consistency
 const mapSeverity = (impact) => {
   const severityMap = {
     'critical': 'Critical',
@@ -170,7 +165,6 @@ const calculateIssueDistribution = (violations) => {
   }));
 };
 
-// FIXED: Updated calculateSeverityBreakdown function
 const calculateSeverityBreakdown = (violations) => {
   console.log('=== SEVERITY BREAKDOWN DEBUG ===');
   console.log('Total violations received:', violations.length);
@@ -216,7 +210,6 @@ const getCategoryColor = (category) => {
   return colors[category] || '#6b7280';
 };
 
-// FIXED: Updated getSeverityColor function
 const getSeverityColor = (severity) => {
   const colors = {
     'Critical': '#dc2626',
@@ -296,7 +289,7 @@ const mapAxeResults = (axeResults, input, type) => {
   // Calculate issue distribution
   const issueDistribution = calculateIssueDistribution(violations);
   
-  // Calculate severity breakdown - FIXED
+  // Calculate severity breakdown
   const severityBreakdown = calculateSeverityBreakdown(violations);
 
   const result = {
@@ -323,51 +316,115 @@ const mapAxeResults = (axeResults, input, type) => {
   return result;
 };
 
+// Error handling middleware
+const handleError = (error, req, res, next) => {
+  console.error('Server error:', error);
+  res.status(500).json({ 
+    error: 'Internal server error occurred',
+    message: process.env.NODE_ENV === 'development' ? error.message : undefined
+  });
+};
+
 // API Routes
 
-// Analyze URL endpoint
+// Health check endpoint (moved up for easier testing)
+app.get('/api/health', (req, res) => {
+  res.json({ 
+    status: 'OK', 
+    timestamp: new Date().toISOString(),
+    service: 'Accessibility Analyzer API',
+    environment: process.env.NODE_ENV || 'development',
+    database: dbConnected ? 'connected' : 'disconnected'
+  });
+});
+
+// Analyze URL endpoint with improved error handling
 app.post('/api/analyze-url', async (req, res) => {
+  let browser = null;
+  
   try {
     const { url } = req.body;
+    
+    console.log('Received URL analysis request:', { url });
     
     if (!url) {
       return res.status(400).json({ error: 'URL is required' });
     }
 
     // Validate URL format
+    let validUrl;
     try {
-      new URL(url);
+      validUrl = new URL(url);
     } catch {
       return res.status(400).json({ error: 'Invalid URL format' });
     }
 
-    console.log(`🔍 Analyzing URL: ${url}`);
+    console.log(`🔍 Analyzing URL: ${validUrl.href}`);
 
-    // Launch Puppeteer with environment-specific configuration
-    const browser = await puppeteer.launch(puppeteerConfig);
+    // Launch Puppeteer with better error handling
+    try {
+      browser = await puppeteer.launch({
+        headless: true,
+        args: [
+          '--no-sandbox', 
+          '--disable-setuid-sandbox',
+          '--disable-dev-shm-usage',
+          '--disable-accelerated-2d-canvas',
+          '--no-first-run',
+          '--no-zygote',
+          '--disable-gpu'
+        ]
+      });
+    } catch (browserError) {
+      console.error('Failed to launch browser:', browserError);
+      return res.status(500).json({ 
+        error: 'Failed to initialize browser for analysis' 
+      });
+    }
     
     const page = await browser.newPage();
     
+    // Set user agent and viewport
+    await page.setUserAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36');
+    await page.setViewport({ width: 1200, height: 800 });
+    
     // Set timeout and try to load page
-    await page.goto(url, { 
-      waitUntil: 'networkidle2', 
-      timeout: 30000 
-    });
+    try {
+      await page.goto(validUrl.href, { 
+        waitUntil: 'networkidle2', 
+        timeout: 30000 
+      });
+    } catch (pageError) {
+      await browser.close();
+      console.error('Failed to load page:', pageError);
+      return res.status(400).json({ 
+        error: 'Failed to load the URL. Please check if the website is accessible and try again.' 
+      });
+    }
 
     // Run axe-core analysis
-    const results = await new AxePuppeteer(page).analyze();
+    let results;
+    try {
+      results = await new AxePuppeteer(page).analyze();
+    } catch (axeError) {
+      await browser.close();
+      console.error('Axe analysis failed:', axeError);
+      return res.status(500).json({ 
+        error: 'Failed to perform accessibility analysis on the page' 
+      });
+    }
     
     await browser.close();
 
     // Map results to your format
-    const mappedResults = mapAxeResults(results, url, 'url');
+    const mappedResults = mapAxeResults(results, validUrl.href, 'url');
 
     // Save to database (if connected)
     if (dbConnected && Analysis) {
       try {
         const analysis = new Analysis({
           type: 'url',
-          input: url,
+          input: validUrl.href,
           results: mappedResults,
           complianceScore: mappedResults.complianceScore,
           totalIssues: mappedResults.totalIssues
@@ -386,34 +443,73 @@ app.post('/api/analyze-url', async (req, res) => {
     });
 
   } catch (error) {
+    if (browser) {
+      try {
+        await browser.close();
+      } catch (closeError) {
+        console.error('Failed to close browser:', closeError);
+      }
+    }
+    
     console.error('❌ URL analysis error:', error);
     res.status(500).json({ 
-      error: 'Failed to analyze URL. Please check if the URL is accessible and try again.' 
+      error: 'Failed to analyze URL. Please check if the URL is accessible and try again.',
+      details: process.env.NODE_ENV === 'development' ? error.message : undefined
     });
   }
 });
 
-// Analyze HTML endpoint
+// Analyze HTML endpoint with improved error handling
 app.post('/api/analyze-html', async (req, res) => {
   try {
     const { htmlContent } = req.body;
+    
+    console.log('Received HTML analysis request');
     
     if (!htmlContent) {
       return res.status(400).json({ error: 'HTML content is required' });
     }
 
+    if (typeof htmlContent !== 'string' || htmlContent.trim().length === 0) {
+      return res.status(400).json({ error: 'HTML content must be a non-empty string' });
+    }
+
     console.log('🔍 Analyzing HTML content...');
 
-    // Create JSDOM instance
-    const dom = new JSDOM(htmlContent);
+    // Create JSDOM instance with error handling
+    let dom;
+    try {
+      dom = new JSDOM(htmlContent, {
+        contentType: 'text/html',
+        includeNodeLocations: true
+      });
+    } catch (domError) {
+      console.error('JSDOM creation failed:', domError);
+      return res.status(400).json({ 
+        error: 'Invalid HTML content. Please check your HTML syntax.' 
+      });
+    }
+
     const { window } = dom;
 
     // Make axe-core work with JSDOM
     global.window = window;
     global.document = window.document;
 
-    // Run axe-core analysis
-    const results = await axeCore.run(window.document);
+    // Run axe-core analysis with error handling
+    let results;
+    try {
+      results = await axeCore.run(window.document);
+    } catch (axeError) {
+      // Clean up global variables
+      delete global.window;
+      delete global.document;
+      
+      console.error('Axe analysis failed:', axeError);
+      return res.status(500).json({ 
+        error: 'Failed to perform accessibility analysis on the HTML content' 
+      });
+    }
 
     // Clean up global variables
     delete global.window;
@@ -448,7 +544,8 @@ app.post('/api/analyze-html', async (req, res) => {
   } catch (error) {
     console.error('❌ HTML analysis error:', error);
     res.status(500).json({ 
-      error: 'Failed to analyze HTML content. Please check your HTML and try again.' 
+      error: 'Failed to analyze HTML content. Please check your HTML and try again.',
+      details: process.env.NODE_ENV === 'development' ? error.message : undefined
     });
   }
 });
@@ -515,34 +612,5 @@ app.get('/api/analysis/:id', async (req, res) => {
 
     const { id } = req.params;
     
-    const analysis = await Analysis.findById(id);
-    
-    if (!analysis) {
-      return res.status(404).json({ error: 'Analysis not found' });
-    }
-
-    res.json({
-      success: true,
-      data: analysis
-    });
-
-  } catch (error) {
-    console.error('❌ Get analysis error:', error);
-    res.status(500).json({ error: 'Failed to retrieve analysis' });
-  }
-});
-
-// Health check endpoint
-app.get('/api/health', (req, res) => {
-  res.json({ 
-    status: 'OK', 
-    timestamp: new Date().toISOString(),
-    service: 'Accessibility Analyzer API'
-  });
-});
-
-// Start server
-app.listen(PORT, () => {
-  console.log(`🚀 Accessibility Analyzer API running on port ${PORT}`);
-  console.log(`📊 MongoDB connected: ${mongoose.connection.readyState === 1 ? 'Yes' : 'No'}`);
-});
+    // Validate MongoDB ObjectId format
+    if (!mongoose.Types.ObjectId.isValid(id)) {
