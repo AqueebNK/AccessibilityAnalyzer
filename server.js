@@ -1,9 +1,7 @@
-// server.js - Optimized for Render deployment
+// server.js - Complete version with fallback method (no Puppeteer dependency)
 const express = require('express');
 const cors = require('cors');
 const mongoose = require('mongoose');
-const puppeteer = require('puppeteer');
-const { AxePuppeteer } = require('@axe-core/puppeteer');
 const { JSDOM } = require('jsdom');
 const axeCore = require('axe-core');
 require('dotenv').config();
@@ -11,21 +9,21 @@ require('dotenv').config();
 const app = express();
 const PORT = process.env.PORT || 5000;
 
-// CORS configuration - Updated for Render deployment
+// CORS configuration
 app.use(cors({
   origin: [
-    'http://localhost:3000',           // for local development
-    'http://localhost:3001',           // alternative local port
-    'https://your-netlify-app.netlify.app',  // replace with your actual Netlify URL
-    'https://*.netlify.app',           // allows any Netlify subdomain
-    'https://*.vercel.app',            // if you use Vercel for frontend
-    process.env.FRONTEND_URL           // environment variable for frontend URL
-  ].filter(Boolean), // Remove any undefined values
+    'http://localhost:3000',
+    'http://localhost:3001',
+    'https://your-netlify-app.netlify.app',
+    'https://*.netlify.app',
+    'https://*.vercel.app',
+    process.env.FRONTEND_URL
+  ].filter(Boolean),
   credentials: true,
   optionsSuccessStatus: 200
 }));
 
-// Middleware with increased limits for HTML content
+// Middleware
 app.use(express.json({ limit: '50mb' }));
 app.use(express.urlencoded({ extended: true, limit: '50mb' }));
 
@@ -35,7 +33,7 @@ app.use((req, res, next) => {
   next();
 });
 
-// MongoDB Connection (Optional for testing)
+// MongoDB Connection (Optional)
 let Analysis = null;
 let dbConnected = false;
 
@@ -51,10 +49,9 @@ if (process.env.MONGODB_URI) {
     console.log('🔄 Running without database - results won\'t be saved');
   });
 
-  // Analysis Results Schema
   const analysisSchema = new mongoose.Schema({
     type: { type: String, enum: ['url', 'html'], required: true },
-    input: { type: String, required: true }, // URL or HTML content
+    input: { type: String, required: true },
     results: { type: Object, required: true },
     timestamp: { type: Date, default: Date.now },
     complianceScore: { type: Number, required: true },
@@ -64,16 +61,15 @@ if (process.env.MONGODB_URI) {
   Analysis = mongoose.model('Analysis', analysisSchema);
 } else {
   console.log('⚠️  No MONGODB_URI found - running without database');
-  console.log('🔄 Analysis results won\'t be saved but API will work');
 }
 
-// Helper Functions
+// Helper Functions (same as before)
 const calculateComplianceScore = (violations, passes, incomplete) => {
   const totalChecks = violations.length + passes.length + incomplete.length;
   if (totalChecks === 0) return 100;
   
   const passedChecks = passes.length;
-  const partialCredit = incomplete.length * 0.5; // Give partial credit for incomplete
+  const partialCredit = incomplete.length * 0.5;
   
   return Math.round(((passedChecks + partialCredit) / totalChecks) * 100);
 };
@@ -119,7 +115,6 @@ const getAffectedGroups = (tags) => {
 };
 
 const generateCodeExample = (violation) => {
-  // Generate simple fix examples based on violation type
   if (violation.id.includes('color-contrast')) {
     return '<!-- Ensure sufficient color contrast -->\n<div style="color: #000; background: #fff;">Good contrast</div>';
   }
@@ -150,7 +145,7 @@ const calculateIssueDistribution = (violations) => {
     } else if (violation.tags.includes('cat.aria')) {
       categories.ARIA++;
     } else {
-      categories.Visual++; // Default category
+      categories.Visual++;
     }
   });
 
@@ -164,9 +159,6 @@ const calculateIssueDistribution = (violations) => {
 };
 
 const calculateSeverityBreakdown = (violations) => {
-  console.log('=== SEVERITY BREAKDOWN DEBUG ===');
-  console.log('Total violations received:', violations.length);
-  
   const severities = {
     'Critical': 0,
     'Serious': 0,
@@ -174,28 +166,18 @@ const calculateSeverityBreakdown = (violations) => {
     'Minor': 0
   };
 
-  violations.forEach((violation, index) => {
+  violations.forEach(violation => {
     const severity = mapSeverity(violation.impact);
-    console.log(`Violation ${index}: impact="${violation.impact}" -> severity="${severity}"`);
     if (severities[severity] !== undefined) {
       severities[severity]++;
-    } else {
-      console.log(`Warning: Unknown severity "${severity}" for violation ${index}`);
     }
   });
 
-  console.log('Severity counts:', severities);
-
-  const result = Object.entries(severities).map(([name, count]) => ({
+  return Object.entries(severities).map(([name, count]) => ({
     name,
     count,
     color: getSeverityColor(name)
   }));
-
-  console.log('Final severityBreakdown result:', result);
-  console.log('=== END SEVERITY DEBUG ===');
-
-  return result;
 };
 
 const getCategoryColor = (category) => {
@@ -219,11 +201,9 @@ const getSeverityColor = (severity) => {
 };
 
 const calculateAccessibilityImpact = (violations) => {
-  // Calculate percentage of users potentially affected
   const criticalCount = violations.filter(v => v.impact === 'critical').length;
   const seriousCount = violations.filter(v => v.impact === 'serious').length;
   
-  // Rough estimation based on severity
   const impact = (criticalCount * 15) + (seriousCount * 8) + (violations.length * 2);
   return Math.min(Math.round(impact), 100);
 };
@@ -231,15 +211,8 @@ const calculateAccessibilityImpact = (violations) => {
 const mapAxeResults = (axeResults, input, type) => {
   const { violations, passes, incomplete } = axeResults;
   
-  console.log('=== MAPPING AXE RESULTS ===');
-  console.log('Violations:', violations.length);
-  console.log('Passes:', passes.length);
-  console.log('Incomplete:', incomplete.length);
-  
-  // Calculate compliance score
   const complianceScore = calculateComplianceScore(violations, passes, incomplete);
   
-  // Map violations to your format
   const mappedViolations = violations.map((violation, index) => ({
     id: `violation-${index}`,
     description: violation.description,
@@ -270,27 +243,22 @@ const mapAxeResults = (axeResults, input, type) => {
     }
   }));
 
-  // Map passed checks
   const mappedPasses = passes.map(pass => ({
     id: pass.id,
     description: pass.description,
     wcagReference: `WCAG 2.1 SC ${pass.tags.find(tag => tag.includes('wcag'))?.replace('wcag', '') || 'N/A'}`
   }));
 
-  // Map incomplete checks
   const mappedIncomplete = incomplete.map(inc => ({
     id: inc.id,
     description: inc.description,
     wcagReference: `WCAG 2.1 SC ${inc.tags.find(tag => tag.includes('wcag'))?.replace('wcag', '') || 'N/A'}`
   }));
 
-  // Calculate issue distribution
   const issueDistribution = calculateIssueDistribution(violations);
-  
-  // Calculate severity breakdown
   const severityBreakdown = calculateSeverityBreakdown(violations);
 
-  const result = {
+  return {
     type,
     input: type === 'url' ? input : 'HTML Content',
     timestamp: new Date().toISOString(),
@@ -305,22 +273,16 @@ const mapAxeResults = (axeResults, input, type) => {
     issueDistribution,
     severityBreakdown
   };
-
-  console.log('=== FINAL MAPPED RESULT ===');
-  console.log('Issue Distribution:', result.issueDistribution);
-  console.log('Severity Breakdown:', result.severityBreakdown);
-  console.log('=== END MAPPING ===');
-
-  return result;
 };
 
-// API Routes
+// Routes
 
 // Root endpoint
 app.get('/', (req, res) => {
   res.json({ 
     message: 'Accessibility Analyzer API is running!',
     version: '1.0.0',
+    mode: 'Fallback (JSDOM)',
     endpoints: {
       health: '/api/health',
       analyzeUrl: 'POST /api/analyze-url',
@@ -331,10 +293,20 @@ app.get('/', (req, res) => {
   });
 });
 
-// Analyze URL endpoint
+// Health check endpoint
+app.get('/api/health', (req, res) => {
+  res.json({ 
+    status: 'OK', 
+    timestamp: new Date().toISOString(),
+    service: 'Accessibility Analyzer API',
+    mode: 'Fallback (JSDOM)',
+    environment: process.env.NODE_ENV || 'development',
+    database: dbConnected ? 'Connected' : 'Disconnected'
+  });
+});
+
+// Analyze URL endpoint - FALLBACK VERSION (no Puppeteer)
 app.post('/api/analyze-url', async (req, res) => {
-  let browser = null;
-  
   try {
     const { url } = req.body;
     
@@ -342,58 +314,63 @@ app.post('/api/analyze-url', async (req, res) => {
       return res.status(400).json({ error: 'URL is required' });
     }
 
-    // Validate URL format
     try {
       new URL(url);
     } catch {
       return res.status(400).json({ error: 'Invalid URL format' });
     }
 
-    console.log(`🔍 Analyzing URL: ${url}`);
+    console.log(`🔍 Analyzing URL (fallback method): ${url}`);
 
-    // Launch Puppeteer with Render-optimized configuration
-    browser = await puppeteer.launch({
-      headless: true,
-      args: [
-        '--no-sandbox',
-        '--disable-setuid-sandbox',
-        '--disable-dev-shm-usage',
-        '--disable-accelerated-2d-canvas',
-        '--no-first-run',
-        '--no-zygote',
-        '--single-process', // Helps with memory on limited resources
-        '--disable-gpu'
-      ],
-      executablePath: process.env.NODE_ENV === 'production' 
-        ? process.env.PUPPETEER_EXECUTABLE_PATH 
-        : puppeteer.executablePath()
-    });
-    
-    const page = await browser.newPage();
-    
-    // Set user agent and viewport
-    await page.setUserAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36');
-    await page.setViewport({ width: 1280, height: 720 });
-    
-    // Set timeout and try to load page
-    await page.goto(url, { 
-      waitUntil: 'networkidle2', 
-      timeout: 45000 // Increased timeout for slower connections
+    // Fetch HTML content
+    const response = await fetch(url, {
+      headers: {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
+        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
+        'Accept-Language': 'en-US,en;q=0.5',
+        'Accept-Encoding': 'gzip, deflate, br',
+        'Cache-Control': 'no-cache'
+      },
+      timeout: 15000
     });
 
-    // Wait a bit more for dynamic content
-    await page.waitForTimeout(2000);
+    if (!response.ok) {
+      throw new Error(`HTTP ${response.status}: ${response.statusText}`);
+    }
 
+    const html = await response.text();
+    console.log(`✅ Fetched HTML (${html.length} characters)`);
+    
+    // Create JSDOM instance
+    const dom = new JSDOM(html, {
+      url: url,
+      features: {
+        FetchExternalResources: false,
+        ProcessExternalResources: false
+      }
+    });
+    
+    const { window } = dom;
+
+    // Make axe-core work with JSDOM
+    global.window = window;
+    global.document = window.document;
+
+    console.log('🔍 Running accessibility analysis with axe-core...');
+    
     // Run axe-core analysis
-    const results = await new AxePuppeteer(page).analyze();
+    const results = await axeCore.run(window.document);
     
-    await browser.close();
-    browser = null;
+    console.log(`✅ Analysis completed: ${results.violations.length} violations found`);
 
-    // Map results to your format
+    // Clean up global variables
+    delete global.window;
+    delete global.document;
+
+    // Map results
     const mappedResults = mapAxeResults(results, url, 'url');
 
-    // Save to database (if connected)
+    // Save to database if available
     if (dbConnected && Analysis) {
       try {
         const analysis = new Analysis({
@@ -419,28 +396,21 @@ app.post('/api/analyze-url', async (req, res) => {
   } catch (error) {
     console.error('❌ URL analysis error:', error);
     
-    // Clean up browser if it's still open
-    if (browser) {
-      try {
-        await browser.close();
-      } catch (closeError) {
-        console.error('Error closing browser:', closeError);
-      }
-    }
-    
     let errorMessage = 'Failed to analyze URL. Please check if the URL is accessible and try again.';
     
     if (error.message.includes('timeout')) {
-      errorMessage = 'The website took too long to respond. Please try again or check if the URL is accessible.';
-    } else if (error.message.includes('net::')) {
-      errorMessage = 'Could not connect to the website. Please check the URL and try again.';
+      errorMessage = 'The website took too long to respond. Please try again.';
+    } else if (error.message.includes('HTTP')) {
+      errorMessage = `Could not access the website (${error.message}). Please check the URL.`;
+    } else if (error.message.includes('fetch')) {
+      errorMessage = 'Network error: Could not connect to the website.';
     }
     
     res.status(500).json({ error: errorMessage });
   }
 });
 
-// Analyze HTML endpoint
+// Analyze HTML endpoint (unchanged)
 app.post('/api/analyze-html', async (req, res) => {
   try {
     const { htmlContent } = req.body;
@@ -451,48 +421,30 @@ app.post('/api/analyze-html', async (req, res) => {
 
     console.log('🔍 Analyzing HTML content...');
 
-    // Create JSDOM instance with better error handling
-    let dom;
-    try {
-      dom = new JSDOM(htmlContent, {
-        features: {
-          FetchExternalResources: false,
-          ProcessExternalResources: false
-        }
-      });
-    } catch (domError) {
-      console.error('JSDOM creation error:', domError);
-      return res.status(400).json({ error: 'Invalid HTML content provided' });
-    }
+    const dom = new JSDOM(htmlContent, {
+      features: {
+        FetchExternalResources: false,
+        ProcessExternalResources: false
+      }
+    });
     
     const { window } = dom;
 
-    // Make axe-core work with JSDOM
     global.window = window;
     global.document = window.document;
 
-    // Run axe-core analysis with error handling
-    let results;
-    try {
-      results = await axeCore.run(window.document);
-    } catch (axeError) {
-      console.error('Axe analysis error:', axeError);
-      throw new Error('Failed to analyze HTML content with axe-core');
-    }
+    const results = await axeCore.run(window.document);
 
-    // Clean up global variables
     delete global.window;
     delete global.document;
 
-    // Map results to your format
     const mappedResults = mapAxeResults(results, htmlContent, 'html');
 
-    // Save to database (if connected)
     if (dbConnected && Analysis) {
       try {
         const analysis = new Analysis({
           type: 'html',
-          input: htmlContent.substring(0, 1000) + '...', // Store truncated version
+          input: htmlContent.substring(0, 1000) + '...',
           results: mappedResults,
           complianceScore: mappedResults.complianceScore,
           totalIssues: mappedResults.totalIssues
@@ -518,7 +470,7 @@ app.post('/api/analyze-html', async (req, res) => {
   }
 });
 
-// Get analysis history
+// Analysis history endpoint
 app.get('/api/analysis-history', async (req, res) => {
   try {
     if (!dbConnected || !Analysis) {
@@ -527,26 +479,20 @@ app.get('/api/analysis-history', async (req, res) => {
         message: 'Database not connected - no history available',
         data: {
           analyses: [],
-          pagination: {
-            page: 1,
-            limit: 10,
-            total: 0,
-            pages: 0
-          }
+          pagination: { page: 1, limit: 10, total: 0, pages: 0 }
         }
       });
     }
 
     const { page = 1, limit = 10, type } = req.query;
     const skip = (page - 1) * limit;
-    
     const filter = type ? { type } : {};
     
     const analyses = await Analysis.find(filter)
       .sort({ timestamp: -1 })
       .skip(skip)
       .limit(parseInt(limit))
-      .select('-results'); // Exclude full results for list view
+      .select('-results');
 
     const total = await Analysis.countDocuments(filter);
 
@@ -569,7 +515,7 @@ app.get('/api/analysis-history', async (req, res) => {
   }
 });
 
-// Get specific analysis by ID
+// Get analysis by ID
 app.get('/api/analysis/:id', async (req, res) => {
   try {
     if (!dbConnected || !Analysis) {
@@ -578,9 +524,7 @@ app.get('/api/analysis/:id', async (req, res) => {
       });
     }
 
-    const { id } = req.params;
-    
-    const analysis = await Analysis.findById(id);
+    const analysis = await Analysis.findById(req.params.id);
     
     if (!analysis) {
       return res.status(404).json({ error: 'Analysis not found' });
@@ -597,17 +541,6 @@ app.get('/api/analysis/:id', async (req, res) => {
   }
 });
 
-// Health check endpoint
-app.get('/api/health', (req, res) => {
-  res.json({ 
-    status: 'OK', 
-    timestamp: new Date().toISOString(),
-    service: 'Accessibility Analyzer API',
-    environment: process.env.NODE_ENV || 'development',
-    database: dbConnected ? 'Connected' : 'Disconnected'
-  });
-});
-
 // Global error handler
 app.use((error, req, res, next) => {
   console.error('Unhandled error:', error);
@@ -620,15 +553,7 @@ app.use((error, req, res, next) => {
 // Handle 404s
 app.use('*', (req, res) => {
   res.status(404).json({ 
-    error: 'Endpoint not found',
-    availableEndpoints: [
-      'GET /',
-      'GET /api/health',
-      'POST /api/analyze-url',
-      'POST /api/analyze-html',
-      'GET /api/analysis-history',
-      'GET /api/analysis/:id'
-    ]
+    error: 'Endpoint not found'
   });
 });
 
@@ -641,17 +566,10 @@ process.on('SIGTERM', async () => {
   process.exit(0);
 });
 
-process.on('SIGINT', async () => {
-  console.log('SIGINT received, shutting down gracefully');
-  if (mongoose.connection.readyState === 1) {
-    await mongoose.connection.close();
-  }
-  process.exit(0);
-});
-
 // Start server
 app.listen(PORT, '0.0.0.0', () => {
   console.log(`🚀 Accessibility Analyzer API running on port ${PORT}`);
   console.log(`📊 MongoDB connected: ${mongoose.connection.readyState === 1 ? 'Yes' : 'No'}`);
+  console.log(`🔄 Mode: Fallback (JSDOM) - No Puppeteer dependency`);
   console.log(`🌍 Environment: ${process.env.NODE_ENV || 'development'}`);
 });
