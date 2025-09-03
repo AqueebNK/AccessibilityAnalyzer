@@ -1,4 +1,4 @@
-// server.js - Render-ready version
+// server.js - Optimized for Render deployment
 const express = require('express');
 const cors = require('cors');
 const mongoose = require('mongoose');
@@ -11,43 +11,31 @@ require('dotenv').config();
 const app = express();
 const PORT = process.env.PORT || 5000;
 
-// Middleware with Render-friendly CORS
+// CORS configuration - Updated for Render deployment
 app.use(cors({
-  origin: function(origin, callback) {
-    // Allow requests with no origin (mobile apps, curl, etc.)
-    if (!origin) return callback(null, true);
-    
-    const allowedOrigins = [
-      'http://localhost:3000',
-      'http://localhost:3001',
-      'http://localhost:5173',
-      'https://your-netlify-app.netlify.app',
-      // Add your actual frontend domain here
-    ];
-    
-    // Allow any localhost for development
-    if (origin.includes('localhost') || allowedOrigins.indexOf(origin) !== -1) {
-      return callback(null, true);
-    }
-    
-    return callback(new Error('Not allowed by CORS'), false);
-  },
+  origin: [
+    'http://localhost:3000',           // for local development
+    'http://localhost:3001',           // alternative local port
+    'https://your-netlify-app.netlify.app',  // replace with your actual Netlify URL
+    'https://*.netlify.app',           // allows any Netlify subdomain
+    'https://*.vercel.app',            // if you use Vercel for frontend
+    process.env.FRONTEND_URL           // environment variable for frontend URL
+  ].filter(Boolean), // Remove any undefined values
   credentials: true,
-  methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
-  allowedHeaders: ['Content-Type', 'Authorization', 'Accept'],
   optionsSuccessStatus: 200
 }));
 
-app.use(express.json({ limit: '10mb' }));
-app.use(express.urlencoded({ extended: true, limit: '10mb' }));
+// Middleware with increased limits for HTML content
+app.use(express.json({ limit: '50mb' }));
+app.use(express.urlencoded({ extended: true, limit: '50mb' }));
 
-// Basic request logging
+// Request logging middleware
 app.use((req, res, next) => {
   console.log(`${new Date().toISOString()} - ${req.method} ${req.path}`);
   next();
 });
 
-// MongoDB Connection (Optional)
+// MongoDB Connection (Optional for testing)
 let Analysis = null;
 let dbConnected = false;
 
@@ -58,24 +46,25 @@ if (process.env.MONGODB_URI) {
   }).then(() => {
     console.log('📊 MongoDB connected successfully');
     dbConnected = true;
-    
-    // Analysis Results Schema
-    const analysisSchema = new mongoose.Schema({
-      type: { type: String, enum: ['url', 'html'], required: true },
-      input: { type: String, required: true },
-      results: { type: Object, required: true },
-      timestamp: { type: Date, default: Date.now },
-      complianceScore: { type: Number, required: true },
-      totalIssues: { type: Number, required: true },
-    });
-
-    Analysis = mongoose.model('Analysis', analysisSchema);
   }).catch((err) => {
     console.log('⚠️  MongoDB connection failed:', err.message);
     console.log('🔄 Running without database - results won\'t be saved');
   });
+
+  // Analysis Results Schema
+  const analysisSchema = new mongoose.Schema({
+    type: { type: String, enum: ['url', 'html'], required: true },
+    input: { type: String, required: true }, // URL or HTML content
+    results: { type: Object, required: true },
+    timestamp: { type: Date, default: Date.now },
+    complianceScore: { type: Number, required: true },
+    totalIssues: { type: Number, required: true },
+  });
+
+  Analysis = mongoose.model('Analysis', analysisSchema);
 } else {
   console.log('⚠️  No MONGODB_URI found - running without database');
+  console.log('🔄 Analysis results won\'t be saved but API will work');
 }
 
 // Helper Functions
@@ -84,7 +73,7 @@ const calculateComplianceScore = (violations, passes, incomplete) => {
   if (totalChecks === 0) return 100;
   
   const passedChecks = passes.length;
-  const partialCredit = incomplete.length * 0.5;
+  const partialCredit = incomplete.length * 0.5; // Give partial credit for incomplete
   
   return Math.round(((passedChecks + partialCredit) / totalChecks) * 100);
 };
@@ -130,6 +119,7 @@ const getAffectedGroups = (tags) => {
 };
 
 const generateCodeExample = (violation) => {
+  // Generate simple fix examples based on violation type
   if (violation.id.includes('color-contrast')) {
     return '<!-- Ensure sufficient color contrast -->\n<div style="color: #000; background: #fff;">Good contrast</div>';
   }
@@ -160,7 +150,7 @@ const calculateIssueDistribution = (violations) => {
     } else if (violation.tags.includes('cat.aria')) {
       categories.ARIA++;
     } else {
-      categories.Visual++;
+      categories.Visual++; // Default category
     }
   });
 
@@ -174,6 +164,9 @@ const calculateIssueDistribution = (violations) => {
 };
 
 const calculateSeverityBreakdown = (violations) => {
+  console.log('=== SEVERITY BREAKDOWN DEBUG ===');
+  console.log('Total violations received:', violations.length);
+  
   const severities = {
     'Critical': 0,
     'Serious': 0,
@@ -181,18 +174,28 @@ const calculateSeverityBreakdown = (violations) => {
     'Minor': 0
   };
 
-  violations.forEach((violation) => {
+  violations.forEach((violation, index) => {
     const severity = mapSeverity(violation.impact);
+    console.log(`Violation ${index}: impact="${violation.impact}" -> severity="${severity}"`);
     if (severities[severity] !== undefined) {
       severities[severity]++;
+    } else {
+      console.log(`Warning: Unknown severity "${severity}" for violation ${index}`);
     }
   });
 
-  return Object.entries(severities).map(([name, count]) => ({
+  console.log('Severity counts:', severities);
+
+  const result = Object.entries(severities).map(([name, count]) => ({
     name,
     count,
     color: getSeverityColor(name)
   }));
+
+  console.log('Final severityBreakdown result:', result);
+  console.log('=== END SEVERITY DEBUG ===');
+
+  return result;
 };
 
 const getCategoryColor = (category) => {
@@ -216,9 +219,11 @@ const getSeverityColor = (severity) => {
 };
 
 const calculateAccessibilityImpact = (violations) => {
+  // Calculate percentage of users potentially affected
   const criticalCount = violations.filter(v => v.impact === 'critical').length;
   const seriousCount = violations.filter(v => v.impact === 'serious').length;
   
+  // Rough estimation based on severity
   const impact = (criticalCount * 15) + (seriousCount * 8) + (violations.length * 2);
   return Math.min(Math.round(impact), 100);
 };
@@ -226,8 +231,15 @@ const calculateAccessibilityImpact = (violations) => {
 const mapAxeResults = (axeResults, input, type) => {
   const { violations, passes, incomplete } = axeResults;
   
+  console.log('=== MAPPING AXE RESULTS ===');
+  console.log('Violations:', violations.length);
+  console.log('Passes:', passes.length);
+  console.log('Incomplete:', incomplete.length);
+  
+  // Calculate compliance score
   const complianceScore = calculateComplianceScore(violations, passes, incomplete);
   
+  // Map violations to your format
   const mappedViolations = violations.map((violation, index) => ({
     id: `violation-${index}`,
     description: violation.description,
@@ -258,22 +270,27 @@ const mapAxeResults = (axeResults, input, type) => {
     }
   }));
 
+  // Map passed checks
   const mappedPasses = passes.map(pass => ({
     id: pass.id,
     description: pass.description,
     wcagReference: `WCAG 2.1 SC ${pass.tags.find(tag => tag.includes('wcag'))?.replace('wcag', '') || 'N/A'}`
   }));
 
+  // Map incomplete checks
   const mappedIncomplete = incomplete.map(inc => ({
     id: inc.id,
     description: inc.description,
     wcagReference: `WCAG 2.1 SC ${inc.tags.find(tag => tag.includes('wcag'))?.replace('wcag', '') || 'N/A'}`
   }));
 
+  // Calculate issue distribution
   const issueDistribution = calculateIssueDistribution(violations);
+  
+  // Calculate severity breakdown
   const severityBreakdown = calculateSeverityBreakdown(violations);
 
-  return {
+  const result = {
     type,
     input: type === 'url' ? input : 'HTML Content',
     timestamp: new Date().toISOString(),
@@ -288,27 +305,29 @@ const mapAxeResults = (axeResults, input, type) => {
     issueDistribution,
     severityBreakdown
   };
+
+  console.log('=== FINAL MAPPED RESULT ===');
+  console.log('Issue Distribution:', result.issueDistribution);
+  console.log('Severity Breakdown:', result.severityBreakdown);
+  console.log('=== END MAPPING ===');
+
+  return result;
 };
 
-// Routes
+// API Routes
 
-// Health check
-app.get('/api/health', (req, res) => {
-  res.json({ 
-    status: 'OK', 
-    timestamp: new Date().toISOString(),
-    service: 'Accessibility Analyzer API',
-    environment: process.env.NODE_ENV || 'development',
-    database: dbConnected ? 'connected' : 'disconnected'
-  });
-});
-
-// Root route
+// Root endpoint
 app.get('/', (req, res) => {
-  res.json({
-    message: 'Accessibility Analyzer API',
-    status: 'running',
-    endpoints: ['/api/health', '/api/analyze-url', '/api/analyze-html']
+  res.json({ 
+    message: 'Accessibility Analyzer API is running!',
+    version: '1.0.0',
+    endpoints: {
+      health: '/api/health',
+      analyzeUrl: 'POST /api/analyze-url',
+      analyzeHtml: 'POST /api/analyze-html',
+      history: 'GET /api/analysis-history',
+      analysis: 'GET /api/analysis/:id'
+    }
   });
 });
 
@@ -323,60 +342,70 @@ app.post('/api/analyze-url', async (req, res) => {
       return res.status(400).json({ error: 'URL is required' });
     }
 
-    let validUrl;
+    // Validate URL format
     try {
-      validUrl = new URL(url);
+      new URL(url);
     } catch {
       return res.status(400).json({ error: 'Invalid URL format' });
     }
 
-    console.log(`🔍 Analyzing URL: ${validUrl.href}`);
+    console.log(`🔍 Analyzing URL: ${url}`);
 
+    // Launch Puppeteer with Render-optimized configuration
     browser = await puppeteer.launch({
-      headless: 'new', // Use new headless mode
+      headless: true,
       args: [
-        '--no-sandbox', 
+        '--no-sandbox',
         '--disable-setuid-sandbox',
         '--disable-dev-shm-usage',
         '--disable-accelerated-2d-canvas',
         '--no-first-run',
         '--no-zygote',
-        '--disable-gpu',
-        '--disable-background-timer-throttling',
-        '--disable-backgrounding-occluded-windows',
-        '--disable-renderer-backgrounding',
-        '--disable-features=TranslateUI',
-        '--disable-ipc-flooding-protection'
+        '--single-process', // Helps with memory on limited resources
+        '--disable-gpu'
       ],
       executablePath: process.env.NODE_ENV === 'production' 
         ? process.env.PUPPETEER_EXECUTABLE_PATH 
-        : puppeteer.executablePath(),
+        : puppeteer.executablePath()
     });
     
     const page = await browser.newPage();
-    await page.setUserAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36');
-    await page.setViewport({ width: 1200, height: 800 });
     
-    await page.goto(validUrl.href, { 
+    // Set user agent and viewport
+    await page.setUserAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36');
+    await page.setViewport({ width: 1280, height: 720 });
+    
+    // Set timeout and try to load page
+    await page.goto(url, { 
       waitUntil: 'networkidle2', 
-      timeout: 30000 
+      timeout: 45000 // Increased timeout for slower connections
     });
 
+    // Wait a bit more for dynamic content
+    await page.waitForTimeout(2000);
+
+    // Run axe-core analysis
     const results = await new AxePuppeteer(page).analyze();
+    
     await browser.close();
+    browser = null;
 
-    const mappedResults = mapAxeResults(results, validUrl.href, 'url');
+    // Map results to your format
+    const mappedResults = mapAxeResults(results, url, 'url');
 
+    // Save to database (if connected)
     if (dbConnected && Analysis) {
       try {
         const analysis = new Analysis({
           type: 'url',
-          input: validUrl.href,
+          input: url,
           results: mappedResults,
           complianceScore: mappedResults.complianceScore,
           totalIssues: mappedResults.totalIssues
         });
+
         await analysis.save();
+        console.log('✅ Analysis saved to database');
       } catch (saveError) {
         console.log('❌ Failed to save to database:', saveError.message);
       }
@@ -388,18 +417,26 @@ app.post('/api/analyze-url', async (req, res) => {
     });
 
   } catch (error) {
+    console.error('❌ URL analysis error:', error);
+    
+    // Clean up browser if it's still open
     if (browser) {
       try {
         await browser.close();
       } catch (closeError) {
-        console.error('Failed to close browser:', closeError);
+        console.error('Error closing browser:', closeError);
       }
     }
     
-    console.error('❌ URL analysis error:', error);
-    res.status(500).json({ 
-      error: 'Failed to analyze URL. Please check if the URL is accessible and try again.'
-    });
+    let errorMessage = 'Failed to analyze URL. Please check if the URL is accessible and try again.';
+    
+    if (error.message.includes('timeout')) {
+      errorMessage = 'The website took too long to respond. Please try again or check if the URL is accessible.';
+    } else if (error.message.includes('net::')) {
+      errorMessage = 'Could not connect to the website. Please check the URL and try again.';
+    }
+    
+    res.status(500).json({ error: errorMessage });
   }
 });
 
@@ -414,32 +451,55 @@ app.post('/api/analyze-html', async (req, res) => {
 
     console.log('🔍 Analyzing HTML content...');
 
-    const dom = new JSDOM(htmlContent, {
-      contentType: 'text/html',
-      includeNodeLocations: true
-    });
-
+    // Create JSDOM instance with better error handling
+    let dom;
+    try {
+      dom = new JSDOM(htmlContent, {
+        features: {
+          FetchExternalResources: false,
+          ProcessExternalResources: false
+        }
+      });
+    } catch (domError) {
+      console.error('JSDOM creation error:', domError);
+      return res.status(400).json({ error: 'Invalid HTML content provided' });
+    }
+    
     const { window } = dom;
+
+    // Make axe-core work with JSDOM
     global.window = window;
     global.document = window.document;
 
-    const results = await axeCore.run(window.document);
+    // Run axe-core analysis with error handling
+    let results;
+    try {
+      results = await axeCore.run(window.document);
+    } catch (axeError) {
+      console.error('Axe analysis error:', axeError);
+      throw new Error('Failed to analyze HTML content with axe-core');
+    }
 
+    // Clean up global variables
     delete global.window;
     delete global.document;
 
+    // Map results to your format
     const mappedResults = mapAxeResults(results, htmlContent, 'html');
 
+    // Save to database (if connected)
     if (dbConnected && Analysis) {
       try {
         const analysis = new Analysis({
           type: 'html',
-          input: htmlContent.substring(0, 1000) + '...',
+          input: htmlContent.substring(0, 1000) + '...', // Store truncated version
           results: mappedResults,
           complianceScore: mappedResults.complianceScore,
           totalIssues: mappedResults.totalIssues
         });
+
         await analysis.save();
+        console.log('✅ Analysis saved to database');
       } catch (saveError) {
         console.log('❌ Failed to save to database:', saveError.message);
       }
@@ -453,22 +513,145 @@ app.post('/api/analyze-html', async (req, res) => {
   } catch (error) {
     console.error('❌ HTML analysis error:', error);
     res.status(500).json({ 
-      error: 'Failed to analyze HTML content. Please check your HTML and try again.'
+      error: 'Failed to analyze HTML content. Please check your HTML and try again.' 
     });
   }
 });
 
-// Error handling middleware
-app.use((error, req, res, next) => {
-  console.error('Server error:', error);
-  res.status(500).json({ 
-    error: 'Internal server error occurred'
+// Get analysis history
+app.get('/api/analysis-history', async (req, res) => {
+  try {
+    if (!dbConnected || !Analysis) {
+      return res.json({
+        success: true,
+        message: 'Database not connected - no history available',
+        data: {
+          analyses: [],
+          pagination: {
+            page: 1,
+            limit: 10,
+            total: 0,
+            pages: 0
+          }
+        }
+      });
+    }
+
+    const { page = 1, limit = 10, type } = req.query;
+    const skip = (page - 1) * limit;
+    
+    const filter = type ? { type } : {};
+    
+    const analyses = await Analysis.find(filter)
+      .sort({ timestamp: -1 })
+      .skip(skip)
+      .limit(parseInt(limit))
+      .select('-results'); // Exclude full results for list view
+
+    const total = await Analysis.countDocuments(filter);
+
+    res.json({
+      success: true,
+      data: {
+        analyses,
+        pagination: {
+          page: parseInt(page),
+          limit: parseInt(limit),
+          total,
+          pages: Math.ceil(total / limit)
+        }
+      }
+    });
+
+  } catch (error) {
+    console.error('❌ Get history error:', error);
+    res.status(500).json({ error: 'Failed to retrieve analysis history' });
+  }
+});
+
+// Get specific analysis by ID
+app.get('/api/analysis/:id', async (req, res) => {
+  try {
+    if (!dbConnected || !Analysis) {
+      return res.status(404).json({ 
+        error: 'Database not connected - analysis not available' 
+      });
+    }
+
+    const { id } = req.params;
+    
+    const analysis = await Analysis.findById(id);
+    
+    if (!analysis) {
+      return res.status(404).json({ error: 'Analysis not found' });
+    }
+
+    res.json({
+      success: true,
+      data: analysis
+    });
+
+  } catch (error) {
+    console.error('❌ Get analysis error:', error);
+    res.status(500).json({ error: 'Failed to retrieve analysis' });
+  }
+});
+
+// Health check endpoint
+app.get('/api/health', (req, res) => {
+  res.json({ 
+    status: 'OK', 
+    timestamp: new Date().toISOString(),
+    service: 'Accessibility Analyzer API',
+    environment: process.env.NODE_ENV || 'development',
+    database: dbConnected ? 'Connected' : 'Disconnected'
   });
 });
 
+// Global error handler
+app.use((error, req, res, next) => {
+  console.error('Unhandled error:', error);
+  res.status(500).json({ 
+    error: 'Internal server error',
+    message: process.env.NODE_ENV === 'development' ? error.message : 'Something went wrong'
+  });
+});
+
+// Handle 404s
+app.use('*', (req, res) => {
+  res.status(404).json({ 
+    error: 'Endpoint not found',
+    availableEndpoints: [
+      'GET /',
+      'GET /api/health',
+      'POST /api/analyze-url',
+      'POST /api/analyze-html',
+      'GET /api/analysis-history',
+      'GET /api/analysis/:id'
+    ]
+  });
+});
+
+// Graceful shutdown
+process.on('SIGTERM', async () => {
+  console.log('SIGTERM received, shutting down gracefully');
+  if (mongoose.connection.readyState === 1) {
+    await mongoose.connection.close();
+  }
+  process.exit(0);
+});
+
+process.on('SIGINT', async () => {
+  console.log('SIGINT received, shutting down gracefully');
+  if (mongoose.connection.readyState === 1) {
+    await mongoose.connection.close();
+  }
+  process.exit(0);
+});
+
 // Start server
-app.listen(PORT, () => {
+app.listen(PORT, '0.0.0.0', () => {
   console.log(`🚀 Accessibility Analyzer API running on port ${PORT}`);
-  console.log(`📊 MongoDB connected: ${dbConnected ? 'Yes' : 'No'}`);
+  console.log(`📊 MongoDB connected: ${mongoose.connection.readyState === 1 ? 'Yes' : 'No'}`);
   console.log(`🌍 Environment: ${process.env.NODE_ENV || 'development'}`);
 });
