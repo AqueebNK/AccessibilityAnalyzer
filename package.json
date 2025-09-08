@@ -23,12 +23,13 @@
   "dependencies": {
     "@axe-core/puppeteer": "^4.8.2",
     "axe-core": "^4.8.2",
+    "chromium": "^3.0.2",
     "cors": "^2.8.5",
     "dotenv": "^16.3.1",
     "express": "^4.18.2",
     "jsdom": "^22.1.0",
     "mongoose": "^7.5.0",
-    "puppeteer": "^21.3.6"
+    "puppeteer-core": "^21.3.6"
   },
   "devDependencies": {
     "nodemon": "^3.0.1"
