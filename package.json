@@ -1,7 +1,7 @@
 {
   "name": "accessibility-analyzer-backend",
   "version": "1.0.0",
-  "description": "Backend API for Accessibility Analyzer with axe-core integration (Puppeteer-free)",
+  "description": "Backend API for Accessibility Analyzer with axe-core integration (Puppeteer)",
   "main": "server.js",
   "scripts": {
     "start": "node server.js",
@@ -13,19 +13,21 @@
     "accessibility",
     "axe-core",
     "wcag",
+    "puppeteer",
     "api",
-    "mongodb",
-    "static-analysis"
+    "mongodb"
   ],
   "author": "Your Name",
   "license": "MIT",
   "dependencies": {
-    "axe-core": "^4.8.2",
+    "@axe-core/puppeteer": "^4.8.2",
+    "@sparticuz/chromium": "^122.0.0",
     "cors": "^2.8.5",
     "dotenv": "^16.3.1",
     "express": "^4.18.2",
-    "jsdom": "^22.1.0",
-    "mongoose": "^7.5.0"
+    "mongoose": "^7.5.0",
+    "puppeteer-cluster": "^0.23.0",
+    "puppeteer-core": "^22.0.0"
   },
   "devDependencies": {
     "nodemon": "^3.0.1"
