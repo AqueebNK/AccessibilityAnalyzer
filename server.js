@@ -1,20 +1,24 @@
 const express = require('express');
 const cors = require('cors');
 const mongoose = require('mongoose');
-const { Cluster } = require('puppeteer-cluster');
+const puppeteer = require('puppeteer');
 const { AxePuppeteer } = require('@axe-core/puppeteer');
-const puppeteer = require('puppeteer-core');
-const chromium = require('@sparticuz/chromium');
+const { JSDOM } = require('jsdom');
+const axeCore = require('axe-core');
 require('dotenv').config();
 
 const app = express();
 const PORT = process.env.PORT || 5000;
 
+// Track MongoDB connection status
 let dbConnected = false;
-let cluster = null;
 
 // Middleware
-app.use(cors());
+app.use(cors({
+  origin: process.env.NODE_ENV === 'production' 
+    ? [process.env.FRONTEND_URL, /\.vercel\.app$/, /\.netlify\.app$/] 
+    : ['http://localhost:3000', 'http://127.0.0.1:3000']
+}));
 app.use(express.json({ limit: '10mb' }));
 app.use(express.urlencoded({ extended: true, limit: '10mb' }));
 
@@ -34,7 +38,7 @@ if (process.env.MONGODB_URI) {
   console.log('📊 No MONGODB_URI provided, running without MongoDB connection');
 }
 
-// Analysis Results Schema (with added index)
+// Analysis Results Schema (only defined if MongoDB is used)
 const analysisSchema = new mongoose.Schema({
   type: { type: String, enum: ['url', 'html'], required: true },
   input: { type: String, required: true },
@@ -43,16 +47,72 @@ const analysisSchema = new mongoose.Schema({
   complianceScore: { type: Number, required: true },
   totalIssues: { type: Number, required: true },
 });
-analysisSchema.index({ timestamp: -1 });
 
 const Analysis = dbConnected ? mongoose.model('Analysis', analysisSchema) : null;
+
+// Puppeteer configuration for Render
+const getPuppeteerConfig = () => {
+  const config = {
+    headless: 'new',
+    args: [
+      '--no-sandbox',
+      '--disable-setuid-sandbox',
+      '--disable-dev-shm-usage',
+      '--disable-extensions',
+      '--disable-gpu',
+      '--disable-web-security',
+      '--allow-running-insecure-content',
+      '--no-zygote',
+      '--single-process',
+      '--disable-features=VizDisplayCompositor'
+    ]
+  };
+
+  // Production configuration for Render
+  if (process.env.NODE_ENV === 'production') {
+    console.log('🔧 Using production Puppeteer configuration');
+    
+    // Try to use system Chrome if available
+    const executablePaths = [
+      '/usr/bin/chromium-browser',
+      '/usr/bin/chromium',
+      '/usr/bin/google-chrome-stable',
+      '/usr/bin/google-chrome'
+    ];
+    
+    // Check if any system Chrome exists
+    const fs = require('fs');
+    for (const path of executablePaths) {
+      if (fs.existsSync(path)) {
+        config.executablePath = path;
+        console.log(`🎯 Using Chrome at: ${path}`);
+        break;
+      }
+    }
+    
+    // Additional production args
+    config.args.push(
+      '--disable-background-timer-throttling',
+      '--disable-backgrounding-occluded-windows',
+      '--disable-renderer-backgrounding',
+      '--disable-features=TranslateUI',
+      '--disable-ipc-flooding-protection'
+    );
+  } else {
+    console.log('🔧 Using development Puppeteer configuration');
+  }
+
+  return config;
+};
 
 // Helper Functions
 const calculateComplianceScore = (violations, passes, incomplete) => {
   const totalChecks = violations.length + passes.length + incomplete.length;
   if (totalChecks === 0) return 100;
+  
   const passedChecks = passes.length;
   const partialCredit = incomplete.length * 0.5;
+  
   return Math.round(((passedChecks + partialCredit) / totalChecks) * 100);
 };
 
@@ -133,7 +193,7 @@ const mapAxeResults = (axeResults, input, type) => {
 const mapSeverity = (impact) => {
   const severityMap = {
     'critical': 'CRITICAL',
-    'serious': 'SERIOUS',
+    'serious': 'SERIOUS', 
     'moderate': 'MODERATE',
     'minor': 'MINOR'
   };
@@ -172,7 +232,7 @@ const getAffectedGroups = (tags) => {
 
 const generateCodeExample = (violation) => {
   if (violation.id.includes('color-contrast')) {
-    return '\n<div style="color: #000; background: #fff;">Good contrast</div>';
+    return '<!-- Ensure sufficient color contrast -->\n<div style="color: #000; background: #fff;">Good contrast</div>';
   }
   if (violation.id.includes('alt-text')) {
     return '<img src="image.jpg" alt="Descriptive alt text for the image">';
@@ -180,7 +240,7 @@ const generateCodeExample = (violation) => {
   if (violation.id.includes('heading')) {
     return '<h1>Main heading</h1>\n<h2>Subheading</h2>';
   }
-  return '';
+  return '<!-- Review the element and apply appropriate accessibility fixes -->';
 };
 
 const calculateIssueDistribution = (violations) => {
@@ -244,7 +304,7 @@ const calculateSeverityBreakdown = (violations) => {
 const getCategoryColor = (category) => {
   const colors = {
     'Visual': '#ef4444',
-    'Navigation': '#f97316',
+    'Navigation': '#f97316', 
     'Forms': '#eab308',
     'ARIA': '#06b6d4'
   };
@@ -274,65 +334,184 @@ const calculateAccessibilityImpact = (violations) => {
   return Math.min(Math.round(impact), 100);
 };
 
-// --- API ROUTES ---
+// API Routes
 
-// Task to be executed by the cluster (handles both URL and HTML)
-const analyzePageTask = async ({ page, data: { url, htmlContent } }) => {
-  if (url) {
-    await page.goto(url, { waitUntil: ['networkidle0', 'domcontentloaded'], timeout: 60000 });
-  } else if (htmlContent) {
-    await page.setContent(htmlContent, { waitUntil: 'domcontentloaded' });
-  }
-
-  const results = await new AxePuppeteer(page).withTags(['wcag2a', 'wcag2aa', 'wcag21aa']).analyze();
-  return results;
-};
-
-// Analyze URL/HTML endpoint (Consolidated into a single route)
-app.post('/api/analyze', async (req, res) => {
+// Analyze URL endpoint
+app.post('/api/analyze-url', async (req, res) => {
+  let browser = null;
+  
   try {
-    const { url, htmlContent } = req.body;
-
-    if (!url && !htmlContent) {
-      return res.status(400).json({ error: 'URL or HTML content is required' });
+    const { url } = req.body;
+    
+    if (!url) {
+      return res.status(400).json({ error: 'URL is required' });
     }
 
-    if (url) {
-      try {
-        new URL(url);
-      } catch {
-        return res.status(400).json({ error: 'Invalid URL format' });
-      }
-      console.log(`Analyzing URL: ${url}`);
-    } else {
-      console.log('Analyzing HTML content...');
+    try {
+      new URL(url);
+    } catch {
+      return res.status(400).json({ error: 'Invalid URL format' });
     }
 
-    const results = await cluster.execute({ url, htmlContent });
-    const mappedResults = mapAxeResults(results, url || htmlContent, url ? 'url' : 'html');
+    console.log(`🔍 Analyzing URL: ${url}`);
+    console.log(`🌍 Environment: ${process.env.NODE_ENV || 'development'}`);
 
+    const puppeteerConfig = getPuppeteerConfig();
+    console.log('🚀 Launching browser with config:', JSON.stringify(puppeteerConfig, null, 2));
+    
+    browser = await puppeteer.launch(puppeteerConfig);
+    
+    const page = await browser.newPage();
+    
+    // Set viewport and user agent
+    await page.setViewport({ width: 1280, height: 720 });
+    await page.setUserAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36');
+    
+    // Set longer timeout for production
+    const navigationTimeout = process.env.NODE_ENV === 'production' ? 90000 : 60000;
+    
+    console.log(`⏱️ Navigation timeout: ${navigationTimeout}ms`);
+    
+    // Navigate to page with multiple wait conditions
+    await page.goto(url, { 
+      waitUntil: ['networkidle0', 'domcontentloaded'], 
+      timeout: navigationTimeout 
+    });
+
+    // Wait a bit more for any dynamic content
+    await page.waitForTimeout(3000);
+
+    // Ensure the page is fully loaded and ready
+    await page.evaluate(() => {
+      return new Promise((resolve) => {
+        if (document.readyState === 'complete') {
+          resolve();
+        } else {
+          window.addEventListener('load', resolve);
+        }
+      });
+    });
+
+    // Additional wait for any remaining async content
+    await page.waitForTimeout(2000);
+
+    console.log('✅ Page loaded successfully, starting axe analysis...');
+
+    const results = await new AxePuppeteer(page)
+      .withTags(['wcag2a', 'wcag2aa', 'wcag21aa'])
+      .analyze();
+    
+    console.log('✅ Axe analysis completed');
+
+    const mappedResults = mapAxeResults(results, url, 'url');
+
+    // Save to database if connected
     if (dbConnected && Analysis) {
       try {
         const analysis = new Analysis({
-          type: url ? 'url' : 'html',
-          input: url || (htmlContent.substring(0, 1000) + '...'),
+          type: 'url',
+          input: url,
           results: mappedResults,
           complianceScore: mappedResults.complianceScore,
           totalIssues: mappedResults.totalIssues
         });
         await analysis.save();
-        console.log('Analysis saved to database');
+        console.log('💾 Analysis saved to database');
       } catch (dbError) {
-        console.error('Failed to save analysis to database:', dbError.message);
+        console.error('❌ Failed to save analysis to database:', dbError.message);
       }
     } else {
-      console.log('Skipping database save: MongoDB not connected');
+      console.log('⚠️ Skipping database save: MongoDB not connected');
     }
 
-    res.json({ success: true, data: mappedResults });
+    res.json({
+      success: true,
+      data: mappedResults
+    });
+
   } catch (error) {
-    console.error('Analysis error:', error);
-    res.status(500).json({ error: 'Failed to perform analysis. Please check your input and try again.' });
+    console.error('❌ URL analysis error:', error);
+    
+    let errorMessage = 'Failed to analyze URL. ';
+    
+    if (error.message.includes('Page/Frame is not ready')) {
+      errorMessage += 'The page could not be loaded properly. Please check if the URL is accessible and try again.';
+    } else if (error.message.includes('timeout') || error.message.includes('Navigation timeout')) {
+      errorMessage += 'The page took too long to load. Please try again or check if the URL is accessible.';
+    } else if (error.message.includes('net::ERR_') || error.message.includes('ERR_NETWORK_CHANGED')) {
+      errorMessage += 'Network error occurred. Please check the URL and your internet connection.';
+    } else if (error.message.includes('Protocol error')) {
+      errorMessage += 'Browser communication error. This might be a temporary issue, please try again.';
+    } else {
+      errorMessage += 'Please check if the URL is accessible and try again.';
+    }
+    
+    res.status(500).json({ error: errorMessage });
+  } finally {
+    if (browser) {
+      try {
+        await browser.close();
+        console.log('🔒 Browser closed successfully');
+      } catch (closeError) {
+        console.error('❌ Error closing browser:', closeError);
+      }
+    }
+  }
+});
+
+// Analyze HTML endpoint
+app.post('/api/analyze-html', async (req, res) => {
+  try {
+    const { htmlContent } = req.body;
+    
+    if (!htmlContent) {
+      return res.status(400).json({ error: 'HTML content is required' });
+    }
+
+    console.log('🔍 Analyzing HTML content...');
+
+    const dom = new JSDOM(htmlContent);
+    const { window } = dom;
+
+    global.window = window;
+    global.document = window.document;
+
+    const results = await axeCore.run(window.document);
+
+    delete global.window;
+    delete global.document;
+
+    const mappedResults = mapAxeResults(results, htmlContent, 'html');
+
+    // Save to database if connected
+    if (dbConnected && Analysis) {
+      try {
+        const analysis = new Analysis({
+          type: 'html',
+          input: htmlContent.substring(0, 1000) + '...',
+          results: mappedResults,
+          complianceScore: mappedResults.complianceScore,
+          totalIssues: mappedResults.totalIssues
+        });
+        await analysis.save();
+        console.log('💾 Analysis saved to database');
+      } catch (dbError) {
+        console.error('❌ Failed to save analysis to database:', dbError.message);
+      }
+    } else {
+      console.log('⚠️ Skipping database save: MongoDB not connected');
+    }
+
+    res.json({
+      success: true,
+      data: mappedResults
+    });
+
+  } catch (error) {
+    console.error('❌ HTML analysis error:', error);
+    res.status(500).json({ 
+      error: 'Failed to analyze HTML content. Please check your HTML and try again.' 
+    });
   }
 });
 
@@ -343,7 +522,15 @@ app.get('/api/analysis-history', async (req, res) => {
       return res.json({
         success: true,
         message: 'Database not connected - no history available',
-        data: { analyses: [], pagination: { page: 1, limit: 10, total: 0, pages: 0 } }
+        data: {
+          analyses: [],
+          pagination: {
+            page: 1,
+            limit: 10,
+            total: 0,
+            pages: 0
+          }
+        }
       });
     }
 
@@ -374,7 +561,7 @@ app.get('/api/analysis-history', async (req, res) => {
     });
 
   } catch (error) {
-    console.error('Get history error:', error);
+    console.error('❌ Get history error:', error);
     res.status(500).json({ error: 'Failed to retrieve analysis history' });
   }
 });
@@ -383,7 +570,9 @@ app.get('/api/analysis-history', async (req, res) => {
 app.get('/api/analysis/:id', async (req, res) => {
   try {
     if (!dbConnected || !Analysis) {
-      return res.status(404).json({ error: 'Database not connected - analysis not available' });
+      return res.status(404).json({ 
+        error: 'Database not connected - analysis not available' 
+      });
     }
 
     const { id } = req.params;
@@ -398,39 +587,66 @@ app.get('/api/analysis/:id', async (req, res) => {
       success: true,
       data: analysis
     });
+
   } catch (error) {
-    console.error('Get analysis error:', error);
+    console.error('❌ Get analysis error:', error);
     res.status(500).json({ error: 'Failed to retrieve analysis' });
   }
 });
 
 // Health check endpoint
-app.get('/api/health', (req, res) => {
-  res.json({
-    status: 'OK',
+app.get('/api/health', async (req, res) => {
+  let browserWorking = false;
+  
+  // Test if Puppeteer can launch
+  try {
+    const browser = await puppeteer.launch(getPuppeteerConfig());
+    await browser.close();
+    browserWorking = true;
+  } catch (error) {
+    console.error('❌ Browser test failed:', error.message);
+  }
+
+  res.json({ 
+    status: 'OK', 
     timestamp: new Date().toISOString(),
     service: 'Accessibility Analyzer API',
-    mongodbConnected: dbConnected
+    environment: process.env.NODE_ENV || 'development',
+    mongodbConnected: dbConnected,
+    puppeteerWorking: browserWorking,
+    version: '1.0.0'
   });
 });
 
-// Start server and initialize the Puppeteer Cluster
-(async () => {
-  cluster = await Cluster.launch({
-    concurrency: Cluster.CONCURRENCY_PAGE,
-    maxConcurrency: 2, // Adjust this number based on your server's resources (CPU cores, RAM)
-    puppeteerOptions: {
-      args: [...chromium.args, '--no-sandbox'],
-      defaultViewport: chromium.defaultViewport,
-      executablePath: await chromium.executablePath(),
-      headless: chromium.headless,
+// Root endpoint
+app.get('/', (req, res) => {
+  res.json({
+    message: 'Accessibility Analyzer API',
+    version: '1.0.0',
+    environment: process.env.NODE_ENV || 'development',
+    endpoints: {
+      health: '/api/health',
+      analyzeUrl: 'POST /api/analyze-url',
+      analyzeHtml: 'POST /api/analyze-html',
+      history: 'GET /api/analysis-history',
+      getAnalysis: 'GET /api/analysis/:id'
     }
   });
-  
-  await cluster.task(analyzePageTask);
+});
 
-  app.listen(PORT, () => {
-    console.log(`🚀 Accessibility Analyzer API running on port ${PORT}`);
-    console.log(`📊 MongoDB connected: ${dbConnected ? 'Yes' : 'No'}`);
+// Error handling middleware
+app.use((error, req, res, next) => {
+  console.error('❌ Unhandled error:', error);
+  res.status(500).json({
+    error: 'Internal server error',
+    message: process.env.NODE_ENV === 'development' ? error.message : 'Something went wrong'
   });
-})();
+});
+
+// Start server
+app.listen(PORT, () => {
+  console.log(`🚀 Accessibility Analyzer API running on port ${PORT}`);
+  console.log(`🌍 Environment: ${process.env.NODE_ENV || 'development'}`);
+  console.log(`📊 MongoDB connected: ${dbConnected ? 'Yes' : 'No'}`);
+  console.log(`🔧 CORS origins: ${process.env.NODE_ENV === 'production' ? 'Production domains' : 'Localhost'}`);
+});
