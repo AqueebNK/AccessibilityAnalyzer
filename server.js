@@ -14,9 +14,13 @@ let dbConnected = false;
 
 // Middleware
 app.use(cors({
-  origin: process.env.NODE_ENV === 'production' 
-    ? [process.env.FRONTEND_URL, /\.vercel\.app$/, /\.netlify\.app$/] 
-    : ['http://localhost:3000', 'http://127.0.0.1:3000']
+  origin: [
+    'http://localhost:3000',
+    'http://127.0.0.1:3000',
+    process.env.FRONTEND_URL,
+    /\.vercel\.app$/,
+    /\.netlify\.app$/
+  ]
 }));
 app.use(express.json({ limit: '10mb' }));
 app.use(express.urlencoded({ extended: true, limit: '10mb' }));
